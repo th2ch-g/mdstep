@@ -10,6 +10,8 @@ pub struct MD {
 
     pub vars: Variables,
     pub obs: Observer,
+    pub pairs: Vec<Pair>,
+    pub margin_length: f64,
 
 }
 
@@ -38,6 +40,44 @@ impl MD {
         self.vars.set_initial_velocity(1.0);
         //self.vars.set_initial_velocity(0.5);
     }
+
+
+    pub fn make_pair(&mut self) {
+        let pn = self.vars.atoms.len();
+        for i in 0..pn-1 {
+            for j in i+1..pn {
+                let mut dx: f64 = self.vars.atoms[j].qx - self.vars.atoms[i].qx;
+                let mut dy: f64 = self.vars.atoms[j].qy - self.vars.atoms[i].qy;
+                let mut dz: f64 = self.vars.atoms[j].qz - self.vars.atoms[i].qz;
+                (dx, dy, dz) = adjust_periodic(dx, dy, dz);
+                let r2: f64 = dx * dx+ dy * dy + dz * dz;
+                if r2 > params::ML2 { continue }
+                let mut p: Pair = Pair{i: 0, j: 0};
+                p.i = i as i32;
+                p.j = j as i32;
+                self.pairs.push(p);
+
+            }
+        }
+
+    }
+
+    pub fn check_pairlist(&mut self) {
+        let mut vmax2: f64 = 0.0;
+        for i in 0..self.vars.atoms.len() {
+            let v2: f64 = self.vars.atoms[i].px * self.vars.atoms[i].px +  self.vars.atoms[i].py * self.vars.atoms[i].py + self.vars.atoms[i].pz * self.vars.atoms[i].pz;
+            if vmax2 < v2 { vmax2 = v2; }
+        }
+        let vmax: f64 = vmax2.sqrt();
+        self.margin_length -= vmax * 2.0 * params::dt;
+        if self.margin_length < 0.0 {
+            self.margin_length = params::MARGIN;
+            self.make_pair();
+        }
+
+    }
+
+
 
     pub fn update_position(&mut self) {
 
@@ -78,6 +118,31 @@ impl MD {
 
     }
 
+    pub fn calculate_force_pair(&mut self) {
+        let pp = self.pairs.len();
+        for k in 0..pp {
+            let i = self.pairs[k].i as usize;
+            let j = self.pairs[k].j as usize;
+            let mut dx: f64 = self.vars.atoms[j].qx - self.vars.atoms[i].qx;
+            let mut dy: f64 = self.vars.atoms[j].qy - self.vars.atoms[i].qy;
+            let mut dz: f64 = self.vars.atoms[j].qz - self.vars.atoms[i].qz;
+            (dx, dy, dz) = adjust_periodic(dx, dy, dz);
+            let r2 = dx * dx + dy * dy + dz * dz;
+            if r2 > params::CL2 { continue }
+            let r6 = r2 * r2 * r2;
+            let r13 = r2.powf(6.5);
+            let df = params::epsilon *  (48.0 - 24.0 * r6) / r13 * params::dt;
+            //let df = (24.0 * r6 - 48.0) / (r6 * r6 * r2) * params::dt;
+            self.vars.atoms[i].px += df * dx;
+            self.vars.atoms[i].py += df * dy;
+            self.vars.atoms[i].pz += df * dz;
+            self.vars.atoms[j].px -= df * dx;
+            self.vars.atoms[j].py -= df * dy;
+            self.vars.atoms[j].pz -= df * dz;
+        }
+
+    }
+
     pub fn periodic(&mut self) {
 
         let L = params::L;
@@ -98,7 +163,8 @@ impl MD {
     pub fn calculate(&mut self) {
         self.update_position();
         self.periodic(); // add
-        self.calculate_force();
+        self.check_pairlist();
+        self.calculate_force_pair();
         self.update_position();
         self.periodic();
         self.vars.time += params::dt;
@@ -113,15 +179,13 @@ impl MD {
         for i in 0..STEPS {
             if i % OBSERVE == 0 {
                 let k = self.obs.kinetic_energy(&self.vars);
-                let v = self.obs.potential_energy(&self.vars);
+                let v = self.obs.potential_energy(&self.vars, &self.pairs);
                 energy_file.write_all(
                     format!("{} {} {} {}\n", self.vars.time as i32, k, v, k+v).as_bytes()).unwrap();
                 self.vars.export_cdview(i);
                 //self.vars.export_vmd(i, self.vars.time, params::L);
             }
-
             self.calculate();
-
         }
     }
 }

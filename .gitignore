@@ -2,5 +2,5 @@
 .DS_Store
 */.DS_Store
 */Cargo.lock
-*/result
+*/result/*
 !*/result/.gitkeep
